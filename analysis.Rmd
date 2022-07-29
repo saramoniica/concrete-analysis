@@ -1,0 +1,867 @@
+---
+title: "Concrete Analysis"
+author: "Sara Monica"
+date: "`r format(Sys.Date(), '%B %e, %Y')`"
+output:
+  rmdformats::downcute:
+    code_folding : show
+    self_contained: true
+    thumbnails: FALSE
+    lightbox: true
+    gallery: true
+    highlight: tango
+---
+# Business Problem 
+
+This problem was originally proposed by Prof. I-Cheng Yeh, Department of Information Management Chung-Hua University, Hsin Chu, Taiwan in 2007. It is related to his research in 1998 about how to predict compression strength in a concrete structure.
+
+"Concrete is the most important material in civil engineering"
+as said by Prof. I-Cheng Yeh
+
+Concrete compression strength is determined not just only by water-cement mixture but also by other ingredients, and how we treat the mixture. Using this dataset, we are going to find “the perfect recipe” to predict the concrete’s compression strength, and how to explain the relationship between the ingredients concentration and the age of testing to the compression strength.
+
+
+# Data Processing 
+
+## Load Libraries
+
+```{r setup, include=FALSE}
+# chunk options
+knitr::opts_chunk$set(message = FALSE, fig.align = "center")
+```
+
+```{r}
+library(dplyr)
+library(caret)
+library(tidyr)
+library(randomForest)
+library(ggplot2)
+library(lime)
+library(GGally)
+library(performance) 
+library(MLmetrics)
+library(lmtest)
+library(car)
+
+```
+
+> Read Data
+
+```{r}
+#  read data
+train <- read.csv("data/data-train.csv")
+```
+
+The observation data consists of the following variables:
+
+- `id`: Id of each cement mixture,
+- `cement`: The amount of cement (Kg) in a m3 mixture,
+- `slag`: The amount of blast furnace slag (Kg) in a m3 mixture,
+- `flyash`: The amount of fly ash (Kg) in a m3 mixture,
+- `water`: The amount of water (Kg) in a m3 mixture,
+- `super_plast`: The amount of Superplasticizer (Kg) in a m3 mixture,
+- `coarse_agg`: The amount of Coarse Aggreagate (Kg) in a m3 mixture,
+- `fine_agg`: The amount of Fine Aggreagate (Kg) in a m3 mixture,
+- `age`: the number of resting days before the compressive strength measurement,
+- `strength`: Concrete compressive strength measurement in MPa unit.
+
+
+In order to ensure that the data is "fully prepared," we demonstrate how to use various data transformations, scaling, handling outliers, or any other statistical strategy. It is best practice to preprocess our data before performing analysis. Data must first be cleaned and transformed before being used for analysis and modeling.
+
+> Pre-processing
+
+```{r}
+# data structure
+glimpse(train)
+```
+
+```{r}
+#  check missing value
+colSums(is.na(train))
+```
+
+```{r, results='hide'}
+# remove duplicate 
+unique(train)
+# remove row containing NA value 
+train <- train %>% filter(complete.cases(.))
+```
+
+> Check data distribution of each predictor
+
+```{r}
+train %>% 
+   select_if(is.numeric) %>% 
+   boxplot(main = 'Distribution of Each Predictor', xlab = 'Predictor', ylab = 'Values')
+```
+
+Our data can be visually examined to identify whether any outliers are present. By requiring our model to accommodate them, outliers impact the dependent variable we're developing. As their names indicate, outliers lie outside our model's majority. The resolving capability of our model might be reduced if we include outliers. We can observe from the boxplot that some variables, such age, super plast, and slag, have noticeable outliers.
+
+> Distribution on Each Predictor
+
+```{r}
+train %>% 
+    select_if(is.numeric) %>% 
+    pivot_longer(cols = -strength, names_to = 'predictor') %>% 
+    ggplot(aes(x = value)) +
+    geom_density() +
+    facet_wrap(~predictor, scales = 'free_x')  +
+    labs(
+        title = 'Density graph of each variable',
+        x = 'variable',
+        y = 'Frequency'
+    )
+```
+
+The graph shows that flyash, slag, coarse, fine, and cement are all fairly uniform in shape. This can imply that these variables are combined freely and without following a prescribed dosage. These are the fundamental components of concrete. Most of the recipes tend to utilize between 150 and 200 milliliters of water. Superplast appears to be either not utilized at all or used in an amount of 10. Most of the recipes are 7, 30, 60, 90–100 days.
+
+## Data Transformation
+Let's see the trend of our data for each predictor
+```{r}
+train %>% 
+    select_if(is.numeric) %>% 
+    pivot_longer(cols = -strength, names_to = 'predictor') %>% 
+    ggplot(aes(x = value, y = strength)) +
+    geom_point() +
+    geom_smooth(method = 'loess', formula = 'y ~ x') +
+    facet_wrap(~predictor, scales = 'free_x')  +
+    labs(
+        title = 'Trends in each variable',
+        x = 'Variable',
+        y = 'Values'
+    )
+```
+
+According to the plots, `cement` and `super_plast` show a significant positive correlation with `strength.` A minor negative correlation exists between `coarse_agg`, `fine_agg`, `fly_ash`, and `slag.` There is no direct relationship between `age` and `water.` `Water` has a cyclical pattern, whereas the period displays a negative curve. With linear data, regression models perform the best. We can attempt to modify the distribution to become more linear by transforming the non-linear data.
+
+### Age as Log(Age)
+```{r}
+train %>% 
+    select_if(is.numeric) %>% 
+    select(age, strength) %>% 
+    ggplot(aes(x = log(age), y = strength)) +
+    geom_point() +
+    geom_smooth(method = 'loess', formula = 'y ~ x') + 
+    labs(
+        title = 'Correlation between log(age) and strength',
+        x = 'log(age)',
+        y = 'strength'
+    )
+```
+
+We see that the two relation is more linear. We'll persist this change to our dataset by transforming `Age` to Log(`Age`)
+
+> Transform Age to Log(Age)
+
+```{r}
+train_log <- train %>% mutate(age = log(age)) 
+```
+
+###  Water as Log(Water)
+```{r}
+train %>% 
+    select_if(is.numeric) %>% 
+    select(water, strength) %>% 
+    ggplot(aes(x = log(water), y = strength)) +
+    geom_point() +
+    geom_smooth(method = 'loess', formula = 'y ~ x') + 
+    labs(
+        title = 'Correlation between log(age) and strength',
+        x = 'log(age)',
+        y = 'strength'
+    )
+```
+
+Since the shape is still cyclical, this transform has no effect.
+
+## Data Scaling 
+```{r}
+train_log %>%
+    select_if(is.numeric) %>% 
+    pivot_longer(cols = -strength, names_to = 'predictor') %>% 
+    group_by(predictor) %>% 
+    summarize(value = max(value)) %>% 
+    ggplot(aes(x = predictor, y = value)) +
+    geom_col(fill = 'pink') + 
+    labs(
+        title = 'Data Range Before Scaling',
+        x = 'Variable',
+        y = 'Value'
+    ) + theme_minimal()
+```
+
+Before we scale `train_log`, we need to remove non-numeric column `id`
+```{r}
+# data scaling
+train_scale <- train_log %>% select(-id) %>% as.data.frame()
+train_scale[,-9] <- scale(train_scale[,-9])
+train_scale %>%
+    pivot_longer(cols = -strength, names_to = 'predictor') %>% 
+    group_by(predictor) %>% 
+    summarize(value = max(value)) %>% 
+    ggplot(aes(x = predictor, y = value)) +
+    geom_col(fill = 'pink') + 
+    labs(
+        title = 'Data Range After Scaling',
+        x = 'Variable',
+        y = 'Values'
+    ) + theme_minimal()
+```
+
+Researchers need to scale the data to depict each variable's impact accurately. By mounting the data, we give each variable equal weight so that we can appropriately interpret the model's coefficients.
+
+# Exploratoty Data Analysis
+## Correlation
+```{r}
+#  cek korelasi
+ggcorr(train_scale, hjust = 1, label = TRUE)
+```
+
+The stronger the correlation, or how near 1 or -1 it is, the more closely related the predictors are. The correlation matrix graphic above shows the correlatiion on each variables. In our dataset, `super_plast` and `water` have the highest negative correlations (-0.6) also `strength` and `age` have the highest positive correlations (0.6)
+
+`age`, `cement`, and `super_plast` have the most significant positive strength relationships. This indicates that the variables positively and substantially contribute to strength. On the other hand, the most vital negative link is found with `water` most negative correlation on the other hand.
+
+## Handling Outliers
+> Find outlier value
+
+```{r, results= 'hide'}
+# Check the outlier after scaling
+boxplot.stats(train_scale$strength)$out
+```
+
+```{r}
+boxplot((train_scale$strength))
+```
+
+> Remove the outlier after scaling
+
+```{r}
+# remove the outlier after scaling
+# train_clean <- train_scale[train_scale$strength < 2.652730 ,]
+train_clean <- train_scale[train_scale$strength < 79.40,]
+# train_clean <- train_scale[train_scale$strength > -2.472288,]
+boxplot(train_clean$strength)
+```
+
+### Modeling with one predictor
+```{r}
+model_ols <- lm(formula = strength ~ cement, data = train_scale)
+model_ols_no_out <- lm(formula = strength ~ cement, data = train_clean)
+```
+
+### Plot the difference between two data
+```{r}
+plot(strength ~ cement, data=train_scale)
+abline(model_ols, col = "red")
+abline(model_ols_no_out, col = "green")
+```
+
+High Leverage, Low Influence: Because the graph shows that the outlier of the strength variable is at High Leverage, Low influence, then we analyze from R-Squared.
+
+### R-squared
+```{r}
+summary(model_ols)$r.squared
+summary(model_ols_no_out)$r.squared
+```
+
+Since the `train_scale` has a better r-square, we decided to not using `train_clean`
+
+## Data Distribution of Each Predictor
+```{r}
+train_scale  %>% as_tibble() %>%
+    pivot_longer(cols = -c(strength), names_to='Predictor') %>% 
+    ggplot(aes(x = Predictor, y = value)) +
+    geom_jitter(col = 'blue', alpha = 0.2) +
+    labs(
+        title = 'Data Distribution of Each Predictor',
+        x = 'Predictor',
+        y = 'Values'
+    ) + theme_minimal()
+```
+
+
+# Model Fitting and Evaluation
+## Data Splitting
+We now split the data into train and validation sets. The training set is used to train the model, which is checked against the validation set.
+```{r}
+library(rsample)
+RNGkind(sample.kind = "Rounding")
+set.seed(123)
+
+index <- sample(nrow(train_scale), nrow(train_scale)*0.8)
+
+data_train <- as.data.frame(train_scale[index,])
+data_validation <- as.data.frame(train_scale[-index,])
+```
+
+> Check the Data Split
+
+```{R}
+set.seed(123)
+control <- trainControl(method = "cv", number = 10)
+
+ca_model <- train(strength ~ ., data = data_train, method = "lm", trControl = control)
+
+ca_model
+```
+
+## Model Fitting
+###  Model with No Predictor
+```{r}
+#  model tanpa prediktor
+model_none <- lm(formula = strength ~ 1, data = data_train)
+```
+
+###  Model with All Predictors
+```{r}
+#  model dengan semua prediktor
+model_all <- lm(strength ~ ., data_train)
+```
+
+### Variable Selection : Step-Wise Regression Model
+We've built model.none that uses no predictor and model.all that uses all variables. Stepwise regression is a method to pick out the optimal model using the Akaika Information Criterion (AIC) as is metrics. The method optimizes the model for the least AIC, meaning the least information loss. Let's try to pick the important variables using stepwise regression. It uses a greedy algorithm to find a local minima. Therefore, it does not guarantee the best model.
+
+
+#### 1. Backward
+```{r, echo= TRUE}
+#  stepwise regression: backward elimination
+model_backward <- step(object = model_all,
+                       direction = "backward",
+                       trace = FALSE) #  agar proses step-wise tidak ditampilkan
+```
+
+
+#### 2. Forward
+```{r, echo= TRUE}
+model_forward <- step(
+  object = model_none, #  batas bawah
+  direction = "forward",
+  scope = list(upper = model_all), #  batas atas
+  trace = FALSE) #  tidak menampilkan proses step-wise
+```
+
+
+#### 3. Both 
+```{r, echo= TRUE}
+model_both <- step(
+  object = model_none, #  bawah batas
+  direction = "both",
+  scope = list(upper = model_all), #  batas atas
+  trace = FALSE
+)
+```
+
+## Model Evaluation
+
+We developed a model_none that doesn't employ a model or predictor. All variables are used. The Akaike Information Criterion (AIC) and metrics are used stepwise regression to determine the best model. To minimize information loss, the technique optimizes the model for the lowest AIC. Let's use stepwise regression to identify the crucial factors. To locate a local minimum, it employs a greedy method. As a result, it cannot assure the best model.
+
+```{r}
+comparison <- compare_performance(model_none, model_all, model_forward, model_both)
+as.data.frame(comparison)
+```
+
+### Evaluation Function
+```{r}
+eval_recap <- function(truth, estimate){
+  
+  df_new <- data.frame(truth = truth,
+                       estimate = estimate)
+  
+  data.frame(RMSE = RMSE(estimate, truth),
+             MAE = MAE(estimate, truth),
+             "R-Square" = R2_Score(estimate, truth),
+             MAPE = MAPE(estimate, truth),
+             check.names = F
+             ) %>% 
+    mutate(MSE = sqrt(RMSE))
+}
+```
+
+### Model None - Evaluation
+```{r}
+# Model None - Evaluation
+pred_none_val <- predict(model_none, data_validation)
+
+eval_recap(truth = data_validation$strength,
+           estimate = pred_none_val)
+```
+
+### Model All - Evaluation
+```{r}
+pred_all_val <- predict(object = model_all, newdata = data_validation)
+
+eval_recap(truth = data_validation$strength,
+           estimate = pred_all_val)
+```
+
+### Model Step-Wise Both - Evaluation
+```{r}
+pred_both_val <- predict(object = model_both, newdata = data_validation)
+
+eval_recap(truth = data_validation$strength,
+           estimate = pred_both_val)
+```
+
+> As shown above, model_all has the best evaluation score. Now, we're check the linearity assumption
+
+## Checking Assumptions
+
+Linear models are made with 4 assumptions. Before we carry on, we have to check whether these assumptions hold for our model.
+
+### Assumption of linearity
+The assumption of linearity assumes that there exists a linear relationship between the predictors and the targe variable, so that our model can correctly describe it. A visual way to evaluate this is to plot the value of residues between our plot and the model.
+
+> Visualization of residual histogram using `hist()` . function
+
+```{r}
+#  histogram residual
+ggplot(data = as.data.frame(model_all$residuals), aes(x = model_all$residuals)) +
+  geom_histogram(fill = "#CC0000", color = "orange", bins = 30) +
+  labs( title = "Regression Residual Distribution", subtitle = "Log Transformation", x = "residual")
+```
+
+### Statistics Test with `shapiro.test()``
+
+Shapiro-Wilk hypothesis test:
+
+- H0: Residuals are normal distributed
+- H1: Residuals are not normally distributed (heteroscedastic)
+
+```{r}
+#  shapiro test dari residual
+shapiro.test(model_all$residuals)
+check_normality(model_all)
+```
+> Based on the result, the residuals are  normally distributed.
+
+### VIF : Independence of Variable
+
+Multicollinearity is a condition with a **strong correlation between predictors**. This is undesirable because it indicates a redundant predictor in the model, which should be able to choose only one of the variables with a solid relationship. It is hoped that **multicollinearity will not occur**
+
+Test the VIF (Variance Inflation Factor) with the `vif()` function from the `car` package:
+* VIF value > 10: multicollinearity occurs in the model
+* VIF value < 10: there is no multicollinearity in the model
+```{r}
+vif(model_all)
+```
+
+> The test result means there is no multicollinearity in the model
+
+### Homoscedasticity
+Homoscedasticity assumption states that the error term in the relationship between the predictor and target variables is constant across all values of inputs. This assumption can be checked using the Breusch-Pagan test with hypotheses :
+
+- H0: Value of error is the same across all inputs (homoscedastic)
+- H1: Value of error is not the same across all range of inputs (heteroscedastic)
+
+```{r}
+plot(x = model_all$fitted.values, y = model_all$residuals)
+abline(h = 0, col = "#FF0000", ylab = 'Residuals', xlab = 'Prediction')
+```
+
+> We can test the homoscedasticity of the model using the Breusch-Pagan test.
+
+```{r}
+bptest(model_all)
+```
+
+> Based on the result, the error are not same across all range of inputs.
+
+Even though our linear model fails the tests, we can still try to conclude it. Our model's mean average percentage error is a decent 0.198.
+
+```{r}
+coef_all <- model_all$coefficients[-1]
+barplot(coef_all, xlab = names(coef_all), main = 'Influence of `Model_all` Predictor',  ylab = 'Value')
+```
+
+# Model Interpretation and Improvement Ideas
+
+We shouldn't transform the data_train because we already did it before in the beginning such as scaling, tranforming several variable into log, or removing any outliers and we are not tranforming the targeted variabel into a scaled version, because we wont scaled back the Test Result in the end of our research.
+
+## One-Way ANOVA
+```{r}
+anova_train <- aov(formula = strength ~ ., data = data_train)
+summary(anova_train)
+```
+
+## Orthogonal Polynomial 
+```{r}
+model_polym <- lm(strength ~ polym(cement , slag, flyash, water, super_plast, coarse_agg, fine_agg, age, degree = 2, raw = T), data_train )
+
+
+pred_polym_val <- predict(object = model_polym, newdata = data_validation)
+
+eval_recap(truth = data_validation$strength,
+           estimate = pred_polym_val)
+```
+
+## Checking Assumptions of Orthogonal Polynomial Model
+
+### Residuals Autocorrelation
+
+We will check whether the residuals are correlating with itself using the Durbin-Watson test.
+
+- H0: p-value > 0.05 : Residuals are not autocorrelated 
+- H1: p-value < 0.05 : Residuals are  autocorrelated 
+
+```{r}
+dwtest(model_polym)
+```
+> Based on the result, the residuals are not autocorrelated.
+
+###  VIF: Independence of variabels
+
+Due to the variables in our model no longer existing independently, we cannot estimate this factor when utilizing polynomials. This will become clearer as we examine the model in more detail in the following subsection.
+
+### Statistics Test with `shapiro.test()``
+
+Shapiro-Wilk hypothesis test:
+
+- H0: Residuals are normal distributed
+- H1: Residuals are not normally distributed (heteroscedastic)
+```{r}
+#  shapiro test dari residual
+shapiro.test(model_polym$residuals)
+check_normality(model_polym)
+```
+
+```{r}
+#  histogram residual
+ggplot(data = as.data.frame(model_polym$residuals), aes(x = model_polym$residuals)) +
+  geom_histogram(fill = "pink", color = "black", bins = 30) +
+  labs( title = "Regression Residual Distribution", subtitle = "Log Transformation", x = "residual")
+```
+
+> Based on the result, the residuals are not normally distributed.
+
+### Homoscedasticity
+Homoscedasticity assumption states that the error term in the relationship between the predictor and target variables is constant across all values of inputs. This assumption can be checked using the Breusch-Pagan test with hypotheses :
+
+- H0: Value of error is the same across all inputs (homoscedastic)
+- H1: Value of error is not the same across all range of inputs (heteroscedastic)
+
+We can test the homoscedasticity of the model using the Breusch-Pagan test.
+```{r}
+bptest(model_polym)
+```
+
+```{r}
+plot(x = model_polym$fitted.values, y = model_polym$residuals)
+abline(h = 0, col = "red", ylab = 'Residuals', xlab = 'Prediction')
+```
+
+> Based on the result, the error are not same across all range of inputs.
+
+Even though our linear model fails the tests, we can still try to conclude it. Our model's mean average percentage error is a decent 0.143.
+
+## Random Foresttion
+
+> Create random forest model as `model_rf`
+
+```{r}
+set.seed(123)
+model_rf <- randomForest(x = data_train %>% select(-strength),
+                         y = data_train$strength, 
+                         ntree = 500)
+
+model_rf
+
+```
+
+> Check the summary and Predictor contribution on Targeted Variable
+
+```{r}
+model_rf$finalModel
+varImp(model_rf)
+```
+
+> Model Random Forest - Evaluation
+
+```{r}
+pred_rf_val <- predict(object = model_rf, newdata = data_validation)
+
+
+eval_recap(truth = data_validation$strength,
+           estimate = pred_rf_val)
+```
+
+### Random Forest Variable Importance on Targeted Variabel
+```{r}
+library("tibble")
+model_rf$importance %>% 
+  as.data.frame() %>% 
+  arrange(-IncNodePurity) %>% 
+  rownames_to_column("variable") %>% 
+  head(10) %>% 
+  ggplot(aes(IncNodePurity, 
+             reorder(variable, IncNodePurity))
+         ) +
+  geom_col(fill = "firebrick") +
+  labs(x = "Importance",
+       y = NULL,
+       title = "Random Forest Variable Importance")
+```
+The plot above showing how big the influence of each predictor, top 3 predictor who correlate with `strength` is `age`, `cement` and `water`
+
+### Lime Interpretation
+```{r}
+library(lime)
+
+set.seed(123)
+explainer <- lime(x = data_train %>% select(-strength),
+                  model = model_rf)
+
+model_type.randomForest <- function(x){
+  return("regression") # for regression problem
+}
+
+predict_model.randomForest <- function(x, newdata, type = "response") {
+
+    # return prediction value
+    predict(x, newdata) %>% as.data.frame()
+    
+}
+
+#  Select only the first 4 observations
+selected_data <- data_validation %>% 
+  select(-strength) %>% 
+  slice(1:4)
+
+#  Explain the model
+set.seed(123)
+explanation <- explain(x = selected_data, 
+                       explainer = explainer,
+                       kernel_width = 1,
+                       dist_fun = "manhattan",
+                       n_features = 8 #  Number of features to explain the model
+                       )
+```
+
+Since we're using scaled data from the beginning, so to visualize `model_rf`, we're still using scaled data.
+
+> Random Forest Visualization dan Interpretation
+
+```{r}
+plot_features(explanation = explanation)
+```
+Explanation Fit indicate how good LIME explain the model, kind of like the \(R^2\) (R-Squared) value of linear regression. Here we see the Explanation Fit only has values around 0.50-0.7 (50%-70%), which can be interpreted that LIME can only explain a little about our model. Almost all of the cases reached the standard which >= 50% (0.5), only Case 4 has explanation fit under 0.50. We also can summarise that Case 3 has the biggest Explanation, but Case 1 has the biggest Prediction.
+
+## Support Vector Machine
+
+```{r}
+library(e1071)
+model_svm <- svm(strength ~ ., data = data_train)
+pred_svm_val <- predict(object = model_svm, newdata = data_validation)
+
+
+eval_recap(truth = data_validation$strength,
+           estimate = pred_svm_val)
+```
+
+The SVR model has higher performance compared to any model that we made before. However, we will still use both model for further analysis both as comparison and as examples.
+
+### Lime Interpretation
+```{r}
+# create the explanation for the SVR model.
+set.seed(123)
+explainer_svm <- lime(x = data_train %>% select(-strength), 
+                  model = model_svm)
+
+# Create SVR model specification for lime.
+model_type.svm <- function(x){
+  return("regression") # for regression problem
+}
+
+predict_model.svm <- function(x, newdata, type = "response") {
+
+    # return prediction value
+    predict(x, newdata) %>% as.data.frame()
+    
+}
+```
+
+> Random Forest Visualization dan Interpretation
+
+```{r}
+set.seed(123)
+explanation_svm <- explain(x = selected_data, 
+                       explainer = explainer_svm,
+                       kernel_width = 1,
+                       dist_fun = "manhattan",
+                       feature_select = "auto", # Method of feature selection for lime
+                       n_features = 10 # Number of features to explain the model
+                       )
+
+plot_features(explanation_svm)
+```
+
+Explanation Fit indicate how good LIME explain the model, kind of like the \(R^2\) (R-Squared) value of linear regression. Here we see the Explanation Fit only has values around 0.50-0.7 (50%-70%), which can be interpreted that LIME can only explain a little about our model. Almost all of the cases reached the standard which >= 50% (0.5), only Case 4 has explanation fit under 0.50. We also can summarise that Case 3 has the biggest Explanation, but Case 1 has the biggest Prediction.
+
+From Case 3, we get the insigth of three predicor who has the big influence to `strength` is `age`, `cement`, and `water`. And on Case 4, `cement`, `water` and `coarse_agg` dominated on who big the can control the concrete `strength`. 
+
+
+
+# Finding a Better Material Composition
+##  Linear Model
+```{r}
+# Gather Top 10 "Strength"
+top_mix <- train_scale %>% arrange(-strength) %>% head(20)
+influence <- top_mix %>% pivot_longer(cols = -c(strength), names_to='Predictor')
+
+#  train_class the data
+data_train %>% 
+    pivot_longer(cols = -c(strength), names_to='Predictor') %>% 
+    ggplot(aes(x = Predictor, y = value)) +
+    geom_jitter(col = 'red', alpha = 0.2) + 
+    geom_jitter(data = influence, aes(x = Predictor, y = value), col = 'blue')  + 
+    labs(
+        title = 'Comparing top 10 Predictor vs. Data',
+        x = 'Predictor',
+        y = 'Values'
+    )
+```
+
+## Clustering `Age` to three Classes
+```{r}
+train_class <-  train %>% select(-id) %>% mutate(
+  age = case_when(age < 40 ~ "< 40",
+                  age >= 40 & age <= 80 ~ "40 - 80",
+                  age > 80 ~ "> 80",
+                  
+))
+```
+
+### Age Class on Strength
+```{r}
+ggplot(data = train_class, aes(x = age, y = strength)) +
+  geom_boxplot() +
+  geom_jitter(aes(color = age), show.legend = F) +
+  labs(x = "Age",
+       y = "Strength") +
+  theme_minimal()
+```
+
+It is known that different days affect construction strength differently based on the outcomes of the statistical summary and visualization of the distribution of `strength` data for each `age` class above. `strength` diminishes with time for a median of 30 days, or less than 40 days on average. At the same time,  40 to 80 days are best because they generate the most with a median `strength` of 50.
+
+### Anova Model 
+```{r}
+anova_class <- aov(formula = strength ~ age, data = train_class)
+summary(anova_class)
+```
+
+Since the p value is less than the significance level (alpha), which is 5% or 0.05, we can conclude that there is a significant difference between the time period of `age` applied to the strength of the construction.
+
+### Pairwise Mean Comparison
+```{r}
+TukeyHSD(anova_class)
+```
+Except for the fumigation dose between 40-80 - > 80, two of the three p-values were below the significance level (alpha), or 5% or 0.05. We can assume that concrete strength better after 40 days.
+
+### Anova Assumption
+#### Homogeneity of Variance 
+
+Hypothesis :
+- H0: Between categories has a homogeneous variance.
+- H1: Between categories has a heterogeneous variance.
+```{r, warning=FALSE}
+leveneTest(strength ~ age, train_class)
+```
+The p value is less than the significance level (alpha), which is 5% or 0.05, we can conclude that between categories have homogeneous variance.
+
+#### Normality Residuals 
+Hypothesis : 
+- H0: Residuals are normal distributed
+- H1: Residuals are not normally distributed (heteroscedastic)
+```{r}
+shapiro.test(anova_class$residuals)
+```
+Based on the result, the residuals are not normally distributed.
+
+> We can conclude that the best periode for concrete is around 40 - 80 days. It's still okay to set the periode on > 80 days, because the median of the data distribution is not that far from the 40-80 days periode.
+
+## Composing Best Mixture Based on Random Forest and Linear Model Interpretation
+```{r}
+# mix and match based on how big the influence of predictors on targeted variable
+comp_1 <- top_mix %>% select(-strength) %>% mutate_all(mean)  %>% head(1)
+comp_2 <- top_mix %>% select(-strength) %>% 
+  mutate(cement = mean(top_mix$cement),
+         water = min(top_mix$water),
+         coarse_agg = mean(top_mix$coarse_agg)) %>% head(1)
+comp_3 <- top_mix %>% select(-strength) %>% 
+  mutate(cement = mean(top_mix$cement),
+         slag = max(top_mix$slag),
+         water = min(top_mix$water)) %>% head(1)
+comp_4 <- top_mix  %>% select(-strength) %>% 
+  mutate(cement = weighted.mean(top_mix$cement),
+         flyash = min(top_mix$flyash),
+         super_plast = mean(top_mix$super_plast),
+         coarse_agg = mean(top_mix$coarse_agg)) %>% head(1)
+```
+
+
+```{r}
+# merged Top 5 Mix and New Composition
+composition <- bind_rows(comp_1, comp_2, comp_3, comp_4)
+```
+
+
+```{r}
+# Predict New Composition with Model Polynomial
+new_comp <- predict(model_svm, composition)
+composition <- composition %>% mutate(strength = new_comp)
+new_formula <- composition %>% mutate(formula = c('C1', 'C2', 'C3','C4'))
+new_formula
+```
+
+
+```{r}
+train_scale %>% arrange(-strength) %>% head(1) %>%
+  mutate(id = "C4",
+         cement = new_formula[4,'cement'][[1]],
+         flyash = new_formula[4,'flyash'][[1]],
+         super_plast = new_formula[4,'super_plast'][[1]],
+         coarse_agg = new_formula[4,'coarse_agg'][[1]],
+         strength = new_formula[4,'strength'][[1]]
+                   )
+```
+
+# Conclusion
+
+In this research project, we have examined various concrete formulations with different strengths. We developed a model that aligns to the available information. Utilizing model as a framework, we developed a fresh formulation and, being used to predicted the strength.
+
+Throughout this project, we have employed a `Support Vector Machine/ Reggresion` Model. Compared to a standard regression, the model better describes the data. As we have discovered, despite being more complicated, it is a model which could be understood. The prediction model implementing "model_svm" obtained MAE values of 3.79 and R Square of 89 percent on validation dataset and MAE values of 5.62 and R Square of 81 percent on test dataset.
+
+The methodology adopted in this project can be used for other issues wherever we want to optimize a result. This method can resolve optimization issues, including improving a food product's flavor, consistency, and texture or determining the ideal chemical mixture to produce a specific flavor and aroma or fragrance. Regression models offer a simple approach to get insight and identify possibilities when used on the relevant issue.
+
+# Submission
+```{r}
+test <- read.csv("data/data-test.csv")
+test[,-c(1,10)] <-  scale(test[,-c(1,10)])
+test_clean <-  test %>% select(-c(id, strength))
+```
+
+```{r}
+comparison <- compare_performance(model_none, model_all, model_both, model_polym)
+as.data.frame(comparison)
+```
+
+```{r}
+#  predict target using your model
+pred_test <- predict(object = model_svm, newdata = test_clean)
+
+#  Create submission data
+submission <- data.frame(id = test$id,
+                         strength = pred_test
+                         )
+
+#  save data
+write.csv(submission, "submission-sara.csv", row.names = F)
+
+#  check first 3 data
+head(submission, 3)
+```
+
+```{r}
+knitr::include_graphics("data/model-svm.png")
+```
+
+
